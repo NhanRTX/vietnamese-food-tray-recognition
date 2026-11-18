@@ -68,7 +68,8 @@ Sau khi chạy, mở đường dẫn local hiển thị trên terminal (mặc đ
 
 ## Demo giao diện
 
-> *(Sau khi chạy thử, bạn chụp 1 tấm ảnh màn hình lúc app nhận diện xong khay cơm và dán vào đây để nhà tuyển dụng xem trực quan nhé!)*
+> *<img width="1695" height="905" alt="image" src="https://github.com/user-attachments/assets/94c28962-0560-44e5-a681-34385e4ee60b" />
+*
 
 ---
 
