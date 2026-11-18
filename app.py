@@ -241,4 +241,4 @@ with gr.Blocks(theme=gr.themes.Soft()) as app:
     query_btn.click(fn=query_invoice_by_id, inputs=invoice_query, outputs=history_output)
 
 if __name__ == "__main__":
-    app.launch()
+    app.launch(share=True)
