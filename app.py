@@ -1,20 +1,21 @@
-import gradio as gr
-import cv2
-import numpy as np
-import os
 import json
 import uuid
 from datetime import datetime
+from pathlib import Path
+
+import cv2
+import gradio as gr
+import numpy as np
 import tensorflow as tf
 from ultralytics import YOLO
 
-os.makedirs("invoices", exist_ok=True)
+BASE_DIR = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
+INVOICES_DIR = BASE_DIR / "invoices"
+HISTORY_FILE = BASE_DIR / "history.json"
+INVOICES_DIR.mkdir(exist_ok=True)
 
-detector = YOLO("/content/YOLOv8.pt")
-cnn_interpreter = tf.lite.Interpreter(model_path="/content/CNNmodel.tflite")
-cnn_interpreter.allocate_tensors()
-cnn_input = cnn_interpreter.get_input_details()
-cnn_output = cnn_interpreter.get_output_details()
+CONF_THRESHOLD = 0.3
+INPUT_SIZE = (224, 224)
 
 FOOD_LABELS = [
     "Ca hu kho",
@@ -42,28 +43,79 @@ PRICE_LIST = {
     "Trung chien": 12000,
 }
 
-def generate_invoice_id():
+
+def resolve_model_path(filename: str) -> str:
+    """Tìm file model ở thư mục models/, thư mục gốc repo, hoặc /content/ (Colab)."""
+    candidates = [
+        BASE_DIR / "models" / filename,
+        BASE_DIR / filename,
+        Path("/content") / filename,
+    ]
+    for path in candidates:
+        if path.exists():
+            return str(path)
+    raise FileNotFoundError(
+        f"Không tìm thấy '{filename}'. Hãy đặt file trong '{BASE_DIR}' hoặc '{BASE_DIR / 'models'}'."
+    )
+
+
+detector = YOLO(resolve_model_path("YOLOv8.pt"))
+cnn_interpreter = tf.lite.Interpreter(model_path=resolve_model_path("CNNmodel.tflite"))
+cnn_interpreter.allocate_tensors()
+cnn_input = cnn_interpreter.get_input_details()
+cnn_output = cnn_interpreter.get_output_details()
+
+
+def generate_invoice_id() -> str:
     now_str = datetime.now().strftime("%Y%m%d")
     unique_part = str(uuid.uuid4())[:8].upper()
     return f"INV{now_str}-{unique_part}"
 
-def detect_and_classify(img):
+
+def load_history() -> list:
+    if not HISTORY_FILE.exists():
+        return []
+    with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def save_history(history_data: list) -> None:
+    with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+        json.dump(history_data, f, ensure_ascii=False, indent=2)
+
+
+def detect_and_classify(img: np.ndarray):
+    if img is None:
+        return "Vui lòng tải lên hoặc chụp ảnh khay cơm trước.", "0đ", None
+
+    img_h, img_w = img.shape[:2]
     yolo_result = detector(img)
     bboxes = yolo_result[0].boxes.data.cpu().numpy()
+
     detected_dishes = []
     total_cost = 0
+
     for box in bboxes:
-        xmin, ymin, xmax, ymax, conf, yolo_cls = box
-        if conf < 0.3:
+        xmin, ymin, xmax, ymax, conf, _ = box
+        if conf < CONF_THRESHOLD:
             continue
-        crop_img = img[int(ymin):int(ymax), int(xmin):int(xmax)]
+
+        x1 = max(0, int(xmin))
+        y1 = max(0, int(ymin))
+        x2 = min(img_w, int(xmax))
+        y2 = min(img_h, int(ymax))
+
+        crop_img = img[y1:y2, x1:x2]
         if crop_img.size == 0:
             continue
-        crop_resized = cv2.resize(crop_img, (224, 224))
+
+        crop_resized = cv2.resize(crop_img, INPUT_SIZE)
         input_arr = np.expand_dims(crop_resized.astype(np.float32) / 255.0, axis=0)
-        cnn_interpreter.set_tensor(cnn_input[0]['index'], input_arr)
+
+        cnn_interpreter.set_tensor(cnn_input[0]["index"], input_arr)
         cnn_interpreter.invoke()
-        preds = cnn_interpreter.get_tensor(cnn_output[0]['index'])
+        preds = cnn_interpreter.get_tensor(cnn_output[0]["index"])
+
         dish_idx = int(np.argmax(preds))
         dish_name = FOOD_LABELS[dish_idx]
         detected_dishes.append(dish_name)
@@ -78,73 +130,86 @@ def detect_and_classify(img):
     summary = "\n".join(detail_lines)
     total_str = f"{total_cost:,}đ"
 
-    invoice_text = f"""HÓA ĐƠN: {invoice_id}
-Thời gian: {now}
----------------------------
-{summary}
----------------------------
-TỔNG CỘNG: {total_str}
-"""
-    invoice_filename = f"invoices/{invoice_id}.txt"
-    with open(invoice_filename, "w", encoding="utf-8") as f:
-        f.write(invoice_text)
+    invoice_text = (
+        f"HÓA ĐƠN: {invoice_id}\n"
+        f"Thời gian: {now}\n"
+        f"---------------------------\n"
+        f"{summary}\n"
+        f"---------------------------\n"
+        f"TỔNG CỘNG: {total_str}\n"
+    )
 
-    history_file = "history.json"
-    if os.path.exists(history_file):
-        with open(history_file, "r", encoding="utf-8") as f:
-            history_data = json.load(f)
-    else:
-        history_data = []
+    invoice_path = INVOICES_DIR / f"{invoice_id}.txt"
+    invoice_path.write_text(invoice_text, encoding="utf-8")
 
-    history_data.append({
-        "id": invoice_id,
-        "time": now,
-        "items": detected_dishes,
-        "total": total_cost,
-        "file": invoice_filename
-    })
+    history_data = load_history()
+    history_data.append(
+        {
+            "id": invoice_id,
+            "time": now,
+            "items": detected_dishes,
+            "total": total_cost,
+            "file": str(invoice_path),
+        }
+    )
+    save_history(history_data)
 
-    with open(history_file, "w", encoding="utf-8") as f:
-        json.dump(history_data, f, ensure_ascii=False, indent=2)
+    return summary, total_str, str(invoice_path)
 
-    return summary, total_str, invoice_filename
 
-def capture_from_camera(camera_url):
-    cap = cv2.VideoCapture(camera_url)
+def capture_from_camera(camera_url: str):
+    url = (camera_url or "").strip()
+    if not url:
+        return None, "Vui lòng nhập URL/IP camera (RTSP hoặc HTTP)."
+
+    cap = cv2.VideoCapture(url)
     if not cap.isOpened():
         return None, "Không thể kết nối tới camera. Kiểm tra lại URL/IP."
+
     ret, frame = cap.read()
     cap.release()
     if not ret:
         return None, "Không lấy được khung hình từ camera."
-    return frame, "Đã chụp ảnh từ camera thành công."
 
-def view_history():
-    if not os.path.exists("history.json"):
+    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    return frame_rgb, "Đã chụp ảnh từ camera thành công."
+
+
+def view_history() -> str:
+    history_data = load_history()
+    if not history_data:
         return "Chưa có hóa đơn nào."
-    with open("history.json", "r", encoding="utf-8") as f:
-        history_data = json.load(f)
+
     last_5 = history_data[-5:]
-    lines = []
-    for h in last_5:
-        lines.append(f"{h['id']} | {h['time']} | {', '.join(h['items'])} | {h['total']:,}đ")
+    lines = [
+        f"{h['id']} | {h['time']} | {', '.join(h['items'])} | {h['total']:,}đ"
+        for h in last_5
+    ]
     return "\n".join(lines)
 
-def query_invoice_by_id(invoice_id):
-    invoice_id = invoice_id.strip().upper()
-    if not os.path.exists("history.json"):
+
+def query_invoice_by_id(invoice_id: str) -> str:
+    target_id = (invoice_id or "").strip().upper()
+    if not target_id:
+        return "Vui lòng nhập mã hóa đơn."
+
+    history_data = load_history()
+    if not history_data:
         return "Không có dữ liệu lịch sử."
-    with open("history.json", "r", encoding="utf-8") as f:
-        history_data = json.load(f)
-    for h in history_data:
-        if h["id"] == invoice_id:
-            with open(h["file"], "r", encoding="utf-8") as f:
-                return f.read()
-    return f"Không tìm thấy hóa đơn với mã: {invoice_id}"
+
+    for record in history_data:
+        if record["id"] == target_id:
+            invoice_path = Path(record["file"])
+            if invoice_path.exists():
+                return invoice_path.read_text(encoding="utf-8")
+            return f"Tìm thấy mã {target_id} nhưng file hóa đơn không còn tồn tại."
+
+    return f"Không tìm thấy hóa đơn với mã: {target_id}"
+
 
 with gr.Blocks(theme=gr.themes.Soft()) as app:
     with gr.Row():
-        gr.Markdown("<h2>Hệ thống nhận diện và tính tiền</h2>")
+        gr.Markdown("<h2>Hệ thống nhận diện và tính tiền khay cơm</h2>")
 
     with gr.Row():
         inp_img = gr.Image(type="numpy", label="Ảnh khay cơm")
@@ -175,4 +240,5 @@ with gr.Blocks(theme=gr.themes.Soft()) as app:
     cam_btn.click(fn=capture_from_camera, inputs=cam_input, outputs=[captured_img, cam_status])
     query_btn.click(fn=query_invoice_by_id, inputs=invoice_query, outputs=history_output)
 
-app.launch()
+if __name__ == "__main__":
+    app.launch()
