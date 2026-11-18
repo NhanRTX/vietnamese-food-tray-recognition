@@ -68,8 +68,8 @@ Sau khi chạy, mở đường dẫn local hiển thị trên terminal (mặc đ
 
 ## Demo giao diện
 
-> *<img width="1695" height="905" alt="image" src="https://github.com/user-attachments/assets/94c28962-0560-44e5-a681-34385e4ee60b" />
-*
+> <img width="1695" height="905" alt="image" src="https://github.com/user-attachments/assets/94c28962-0560-44e5-a681-34385e4ee60b" />
+
 
 ---
 
